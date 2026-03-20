@@ -515,7 +515,7 @@ nammashield/
 
 ## 📎 Links
 
-- 🎥 Demo Video: *(link to be added)*
+- 🎥 Demo Video: *https://youtu.be/yVHETS1qZRI?si=gcZ2QzYYiEx7JUtz*
 
 ---
 
