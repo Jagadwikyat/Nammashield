@@ -13,7 +13,9 @@ import {
   Zap,
 } from "lucide-react";
 import { useAppStore } from "@/lib/navigationStore";
-import { ZONES, CITY_RISK } from "@/lib/mockData";
+import { useAuthStore } from "@/lib/authStore";
+import { supabase } from "@/lib/supabase/client";
+import { ZONES } from "@/lib/mockData";
 import { useRouter } from "next/navigation";
 
 /* ─── Animation Config ─── */
@@ -194,11 +196,14 @@ function StepPhone({
   const [otp, setOtp] = useState<string[]>(Array(6).fill(""));
   const [sending, setSending] = useState(false);
   const [verifying, setVerifying] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const otpRefs = useRef<(HTMLInputElement | null)[]>([]);
+  const loginWithPhone = useAuthStore((s) => s.loginWithPhone);
 
   const handlePhoneChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = e.target.value.replace(/\D/g, "").slice(0, 10);
     setPhone(val);
+    setError(null);
   };
 
   const handleSendOtp = () => {
@@ -208,6 +213,20 @@ function StepPhone({
         setSending(false);
         setOtpSent(true);
       }, 1200);
+    }
+  };
+
+  const completeLogin = async () => {
+    setVerifying(true);
+    setError(null);
+    try {
+      await loginWithPhone(`+91${phone}`);
+      setVerifying(false);
+      onNext({ phone: `+91${phone}` });
+    } catch (err) {
+      console.error("Login error:", err);
+      setError("Something went wrong. Please try again.");
+      setVerifying(false);
     }
   };
 
@@ -225,13 +244,9 @@ function StepPhone({
       otpRefs.current[index + 1]?.focus();
     }
 
-    // Auto-verify when all filled
+    // Auto-verify when all filled — call Supabase
     if (val && newOtp.every((c) => c !== "")) {
-      setVerifying(true);
-      setTimeout(() => {
-        setVerifying(false);
-        onNext({ phone: `+91${phone}` });
-      }, 1000);
+      completeLogin();
     }
   };
 
@@ -251,11 +266,7 @@ function StepPhone({
       const newOtp = data.split("");
       setOtp(newOtp);
       otpRefs.current[5]?.focus();
-      setVerifying(true);
-      setTimeout(() => {
-        setVerifying(false);
-        onNext({ phone: `+91${phone}` });
-      }, 1000);
+      completeLogin();
     }
   };
 
@@ -444,6 +455,8 @@ function StepPlatformId({
 }: {
   onNext: (data: { platform: string; partnerId: string }) => void;
 }) {
+  const workerId = useAuthStore((s) => s.workerId);
+  const [saving, setSaving] = useState(false);
   const [state, setState] = useState<
     "upload" | "scanning" | "verified"
   >("upload");
@@ -724,15 +737,53 @@ function StepPlatformId({
           </div>
 
           <button
-            onClick={() => onNext({ platform, partnerId: "SWG-48721" })}
-            className="w-full mt-6 py-3 rounded-lg text-white font-medium text-sm flex items-center justify-center gap-2 transition-all duration-150"
+            onClick={async () => {
+              const partnerId = "SWG-48721";
+              if (!workerId) return;
+              setSaving(true);
+              try {
+                const { error } = await supabase
+                  .from("workers")
+                  .update({ name: platform, partner_id: partnerId })
+                  .eq("id", workerId);
+                if (error) throw error;
+                onNext({ platform, partnerId });
+              } catch (e) {
+                console.error(e);
+              } finally {
+                setSaving(false);
+              }
+            }}
+            disabled={saving}
+            className="w-full mt-6 py-3 rounded-lg text-white font-medium text-sm flex items-center justify-center gap-2 transition-all duration-150 disabled:opacity-60"
             style={{
               background: "var(--primary)",
               boxShadow: "0 2px 8px rgba(232,93,26,0.35)",
               fontFamily: "var(--font-body)",
             }}
           >
-            Continue <ChevronRight size={16} />
+            {saving ? (
+              <>
+                <motion.div
+                  animate={{ rotate: 360 }}
+                  transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+                    <path
+                      d="M12 2a10 10 0 0 1 10 10"
+                      stroke="white"
+                      strokeWidth="2.5"
+                      strokeLinecap="round"
+                    />
+                  </svg>
+                </motion.div>
+                Saving...
+              </>
+            ) : (
+              <>
+                Continue <ChevronRight size={16} />
+              </>
+            )}
           </button>
         </motion.div>
       )}
@@ -977,15 +1028,25 @@ function StepUPI({
 function StepLocation({
   onNext,
 }: {
-  onNext: (data: { city: string; zone: string; riskScore: number }) => void;
+  onNext: (data: {
+    city: string;
+    zone: string;
+    riskScore: number;
+    tier: string;
+    weeklyPremium: number;
+    coverageAmount: number;
+  }) => void;
 }) {
+  const workerId = useAuthStore((s) => s.workerId);
   const [city, setCity] = useState("");
   const [zone, setZone] = useState("");
   const [showRisk, setShowRisk] = useState(false);
+  const [mlLoading, setMlLoading] = useState(false);
+  const [riskScore, setRiskScore] = useState(0);
+  const [tier, setTier] = useState("Standard");
+  const [weeklyPremium, setWeeklyPremium] = useState(100);
 
-  const cityZones = city ? (ZONES as any)[city] || [] : [];
-  const baseRisk = city ? (CITY_RISK as any)[city] || 0 : 0;
-  const riskScore = Math.round(baseRisk * 100);
+  const cityZones = city ? (ZONES as Record<string, string[]>)[city] || [] : [];
 
   const handleCitySelect = (c: string) => {
     setCity(c);
@@ -993,8 +1054,35 @@ function StepLocation({
     setShowRisk(false);
   };
 
-  const handleNext = () => {
-    setShowRisk(true);
+  const handleNext = async () => {
+    if (!city || !zone || !workerId) return;
+    setMlLoading(true);
+    await supabase.from("workers").update({ city, zone }).eq("id", workerId);
+
+    const base = process.env.NEXT_PUBLIC_ML_API_URL?.replace(/\/$/, "") ?? "";
+    try {
+      const res = await fetch(`${base}/ml/risk-score`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ city, zone, streak_weeks: 0 }),
+      });
+      if (!res.ok) throw new Error("ml");
+      const j = (await res.json()) as {
+        risk_score: number;
+        tier: string;
+        weekly_premium: number;
+      };
+      setRiskScore(Math.round(j.risk_score));
+      setTier(j.tier);
+      setWeeklyPremium(Number(j.weekly_premium));
+    } catch {
+      setRiskScore(45);
+      setTier("Standard");
+      setWeeklyPremium(100);
+    } finally {
+      setMlLoading(false);
+      setShowRisk(true);
+    }
   };
 
   return (
@@ -1150,7 +1238,7 @@ function StepLocation({
                   fontFamily: "var(--font-mono)",
                 }}
               >
-                {riskScore > 60 ? "High Coverage" : "Standard Coverage"}
+                {tier} · ₹{weeklyPremium}/wk
               </span>
             </div>
             <div className="flex items-end gap-2 mb-3">
@@ -1205,7 +1293,16 @@ function StepLocation({
           </div>
 
           <button
-            onClick={() => onNext({ city, zone, riskScore })}
+            onClick={() =>
+              onNext({
+                city,
+                zone,
+                riskScore,
+                tier,
+                weeklyPremium,
+                coverageAmount: Math.round(weeklyPremium * 7),
+              })
+            }
             className="w-full mt-6 py-3 rounded-lg text-white font-medium text-sm flex items-center justify-center gap-2 transition-all duration-150"
             style={{
               background: "var(--primary)",
@@ -1220,15 +1317,37 @@ function StepLocation({
 
       {!showRisk && city && zone && (
         <button
-          onClick={handleNext}
-          className="w-full py-3 rounded-lg text-white font-medium text-sm flex items-center justify-center gap-2 transition-all duration-150"
+          onClick={() => void handleNext()}
+          disabled={mlLoading}
+          className="w-full py-3 rounded-lg text-white font-medium text-sm flex items-center justify-center gap-2 transition-all duration-150 disabled:opacity-60"
           style={{
             background: "var(--primary)",
             boxShadow: "0 2px 8px rgba(232,93,26,0.35)",
             fontFamily: "var(--font-body)",
           }}
         >
-          Check Coverage <ChevronRight size={16} />
+          {mlLoading ? (
+            <>
+              <motion.div
+                animate={{ rotate: 360 }}
+                transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+                  <path
+                    d="M12 2a10 10 0 0 1 10 10"
+                    stroke="white"
+                    strokeWidth="2.5"
+                    strokeLinecap="round"
+                  />
+                </svg>
+              </motion.div>
+              Scoring...
+            </>
+          ) : (
+            <>
+              Check Coverage <ChevronRight size={16} />
+            </>
+          )}
         </button>
       )}
     </motion.div>
@@ -1247,19 +1366,56 @@ function StepActivate({
     city: string;
     zone: string;
     riskScore: number;
+    tier: string;
+    weeklyPremium: number;
+    coverageAmount: number;
   };
 }) {
   const [gpsGranted, setGpsGranted] = useState(false);
   const [activating, setActivating] = useState(false);
+  const [activateError, setActivateError] = useState<string | null>(null);
   const router = useRouter();
+  const workerId = useAuthStore((s) => s.workerId);
+  const setOnboardingComplete = useAuthStore((s) => s.setOnboardingComplete);
 
-  const handleActivate = () => {
+  const handleActivate = async () => {
+    if (!workerId) return;
+    setActivateError(null);
     setActivating(true);
-    setTimeout(() => {
-      setActivating(false);
+    try {
+      const start = new Date();
+      const end = new Date(start);
+      end.setDate(end.getDate() + 7);
+      const startStr = start.toISOString().slice(0, 10);
+      const endStr = end.toISOString().slice(0, 10);
+
+      const { error: polErr } = await supabase.from("policies").insert({
+        worker_id: workerId,
+        tier: data.tier,
+        weekly_premium: data.weeklyPremium,
+        coverage_amount: data.coverageAmount,
+        risk_score: data.riskScore,
+        start_date: startStr,
+        end_date: endStr,
+        status: "active",
+      });
+      if (polErr) throw polErr;
+
+      const { error: wErr } = await supabase
+        .from("workers")
+        .update({ is_onboarded: true, wallet_balance: 0 })
+        .eq("id", workerId);
+      if (wErr) throw wErr;
+
+      setOnboardingComplete();
       useAppStore.getState().completeOnboarding();
       router.push("/dashboard");
-    }, 2000);
+    } catch (e) {
+      console.error(e);
+      setActivateError("Could not activate. Please try again.");
+    } finally {
+      setActivating(false);
+    }
   };
 
   return (
@@ -1367,7 +1523,7 @@ function StepActivate({
                 letterSpacing: "0.05em",
               }}
             >
-              Weekly Premium
+              Weekly Premium ({data.tier})
             </p>
             <p
               className="text-lg font-semibold"
@@ -1377,7 +1533,7 @@ function StepActivate({
                 fontWeight: 500,
               }}
             >
-              ₹100
+              ₹{data.weeklyPremium}
             </p>
           </div>
           <div className="text-right">
@@ -1401,7 +1557,7 @@ function StepActivate({
                 fontWeight: 500,
               }}
             >
-              ₹700
+              ₹{data.coverageAmount}
             </p>
           </div>
           <div className="text-right">
@@ -1553,9 +1709,18 @@ function StepActivate({
         </motion.div>
       )}
 
+      {activateError && (
+        <p
+          className="text-sm mb-3 text-center"
+          style={{ color: "var(--primary)", fontFamily: "var(--font-body)" }}
+        >
+          {activateError}
+        </p>
+      )}
+
       {/* Activate CTA */}
       <button
-        onClick={handleActivate}
+        onClick={() => void handleActivate()}
         disabled={activating}
         className="w-full py-4 rounded-lg text-white font-semibold text-base flex items-center justify-center gap-2 transition-all duration-150 disabled:opacity-70"
         style={{
@@ -1638,6 +1803,9 @@ export default function OnboardingPage() {
     city: "",
     zone: "",
     riskScore: 0,
+    tier: "Standard",
+    weeklyPremium: 100,
+    coverageAmount: 700,
   });
 
   const totalSteps = 5;

@@ -79,3 +79,11 @@ Thumbs.db
 db/
 download/
 upload/
+
+# ML Service
+ml/*.pkl
+ml/risk_training_data.csv
+ml/venv/
+ml/.env
+
+.env.local

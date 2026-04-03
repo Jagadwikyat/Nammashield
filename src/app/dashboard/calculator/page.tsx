@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Calculator as CalculatorIcon,
@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { ZONES, CITY_RISK } from "@/lib/mockData";
+import { Loader2 } from "lucide-react";
 
 /* ─── Constants ─── */
 const CITIES = Object.keys(ZONES);
@@ -297,6 +298,13 @@ export default function CalculatorPage() {
   const [platform, setPlatform] = useState("");
   const [weeksClean, setWeeksClean] = useState(0);
   const [showResults, setShowResults] = useState(false);
+  const [mlResult, setMlResult] = useState<{
+    risk_score: number;
+    tier: string;
+    weekly_premium: number;
+  } | null>(null);
+  const [mlLoading, setMlLoading] = useState(false);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const cityZones = city ? ZONES[city] || [] : [];
 
@@ -307,18 +315,82 @@ export default function CalculatorPage() {
     [zone, cityZones]
   );
 
-  const score = useMemo(
-    () =>
-      isFormComplete
-        ? computeRiskScore(city, zoneIndex, platform, weeksClean)
-        : 0,
-    [city, zoneIndex, platform, weeksClean, isFormComplete]
-  );
+  useEffect(() => {
+    if (!city || !zone) {
+      setMlResult(null);
+      return;
+    }
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(async () => {
+      setMlLoading(true);
+      const base =
+        process.env.NEXT_PUBLIC_ML_API_URL?.replace(/\/$/, "") ?? "";
+      try {
+        if (!base) {
+          setMlResult(null);
+          return;
+        }
+        const res = await fetch(`${base}/ml/risk-score`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            city,
+            zone,
+            streak_weeks: weeksClean,
+          }),
+        });
+        if (res.ok) {
+          const j = (await res.json()) as {
+            risk_score: number;
+            tier: string;
+            weekly_premium: number;
+          };
+          setMlResult(j);
+        } else {
+          setMlResult(null);
+        }
+      } catch {
+        setMlResult(null);
+      } finally {
+        setMlLoading(false);
+      }
+    }, 500);
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+  }, [city, zone, weeksClean]);
 
-  const premium = useMemo(
-    () => (isFormComplete ? computePremium(score, weeksClean) : null),
-    [score, weeksClean, isFormComplete]
-  );
+  const score = useMemo(() => {
+    if (!isFormComplete) return 0;
+    if (mlResult) return Math.round(mlResult.risk_score);
+    return computeRiskScore(city, zoneIndex, platform, weeksClean);
+  }, [
+    isFormComplete,
+    mlResult,
+    city,
+    zoneIndex,
+    platform,
+    weeksClean,
+  ]);
+
+  const premium = useMemo(() => {
+    if (!isFormComplete) return null;
+    if (mlResult) {
+      let p = Number(mlResult.weekly_premium);
+      const originalPremium = p;
+      const hasDiscount = weeksClean >= 4;
+      if (hasDiscount) p = Math.round(p * 0.9);
+      const coverage = Math.round(Number(mlResult.weekly_premium) * 7);
+      return {
+        tier: mlResult.tier,
+        premium: p,
+        originalPremium,
+        coverage,
+        hasDiscount,
+      };
+    }
+    return computePremium(score, weeksClean);
+  }, [isFormComplete, mlResult, score, weeksClean]);
 
   const handleCalculate = () => {
     if (isFormComplete) {
@@ -653,6 +725,16 @@ export default function CalculatorPage() {
                 </span>
               </div>
             </div>
+
+            {mlLoading && city && zone && (
+              <p
+                className="text-xs flex items-center gap-2 justify-center"
+                style={{ color: "var(--muted)", fontFamily: "var(--font-body)" }}
+              >
+                <Loader2 className="w-4 h-4 animate-spin shrink-0" />
+                Updating live estimate from ML…
+              </p>
+            )}
 
             {/* Calculate Button */}
             <motion.button

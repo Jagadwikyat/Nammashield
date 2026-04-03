@@ -1,12 +1,16 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
 import { Check, X, ChevronDown, ArrowRight, Shield } from "lucide-react";
-import { WORKER, PLANS } from "@/lib/mockData";
+import { PLANS } from "@/lib/mockData";
+import { useDashboardState } from "@/components/namma/DashboardStateProvider";
 import { RiskRing } from "@/components/namma/RiskRing";
 import { CountUp } from "@/components/namma/CountUp";
 import { Switch } from "@/components/ui/switch";
+import { Skeleton } from "@/components/ui/skeleton";
+import { format } from "date-fns";
 
 /* ─── Shared Styles ─── */
 const cardShadow =
@@ -169,6 +173,55 @@ function FAQItem({
 /* ─── Left Column: Active Policy Card ─── */
 function ActivePolicyCard() {
   const [autoRenew, setAutoRenew] = useState(true);
+  const { worker, policy, loading } = useDashboardState();
+
+  if (loading) {
+    return (
+      <div
+        className="bg-white rounded-xl p-6 h-fit sticky top-6"
+        style={{ boxShadow: cardShadow }}
+      >
+        <Skeleton className="h-8 w-40 mb-4" />
+        <Skeleton className="h-12 w-full mb-6" />
+        <Skeleton className="h-32 w-full" />
+      </div>
+    );
+  }
+
+  if (!worker || !policy) {
+    return (
+      <div
+        className="bg-white rounded-xl p-6 h-fit sticky top-6"
+        style={{ boxShadow: cardShadow }}
+      >
+        <h2
+          className="text-lg mb-2"
+          style={{ fontFamily: "var(--font-display)" }}
+        >
+          No active policy
+        </h2>
+        <p className="text-sm mb-4" style={{ color: "var(--muted)" }}>
+          Complete onboarding to view and manage your coverage.
+        </p>
+        <Link
+          href="/onboarding"
+          className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-white text-sm font-medium"
+          style={{ background: "var(--primary)" }}
+        >
+          Complete onboarding
+          <ArrowRight size={14} />
+        </Link>
+      </div>
+    );
+  }
+
+  const riskScore = Math.round(Number(policy.risk_score));
+  const startLabel = policy.start_date
+    ? format(new Date(policy.start_date), "MMM d, yyyy")
+    : "—";
+  const endLabel = policy.end_date
+    ? format(new Date(policy.end_date), "MMM d, yyyy")
+    : "—";
 
   return (
     <div
@@ -197,7 +250,7 @@ function ActivePolicyCard() {
               color: "var(--foreground)",
             }}
           >
-            {WORKER.tier}
+            {policy.tier}
           </h2>
         </div>
         <span
@@ -208,7 +261,7 @@ function ActivePolicyCard() {
             fontFamily: "var(--font-body)",
           }}
         >
-          {WORKER.tier}
+          {policy.tier}
         </span>
       </div>
 
@@ -237,7 +290,7 @@ function ActivePolicyCard() {
               lineHeight: 1.1,
             }}
           >
-            <CountUp prefix="₹" end={WORKER.premium} />
+            <CountUp prefix="₹" end={Number(policy.weekly_premium)} />
           </span>
           <span
             className="text-sm"
@@ -275,7 +328,7 @@ function ActivePolicyCard() {
                 color: "var(--foreground)",
               }}
             >
-              <CountUp prefix="₹" end={WORKER.maxCoverage} />
+              <CountUp prefix="₹" end={Number(policy.coverage_amount)} />
               <span
                 style={{
                   fontFamily: "var(--font-mono)",
@@ -298,7 +351,7 @@ function ActivePolicyCard() {
             fontSize: "0.75rem",
           }}
         >
-          Mon {WORKER.coverageWindow.start} — Sun {WORKER.coverageWindow.end}
+          {startLabel} — {endLabel}
         </p>
       </div>
 
@@ -318,7 +371,7 @@ function ActivePolicyCard() {
         </p>
         <div className="flex items-center gap-4">
           <div className="relative">
-            <RiskRing score={WORKER.riskScore} size={56} strokeWidth={5} showLabel={false} />
+            <RiskRing score={riskScore} size={56} strokeWidth={5} showLabel={false} />
             <div
               className="absolute inset-0 flex items-center justify-center"
               style={{ marginTop: 0 }}
@@ -331,7 +384,7 @@ function ActivePolicyCard() {
                   color: "var(--foreground)",
                 }}
               >
-                {WORKER.riskScore}
+                {riskScore}
               </span>
             </div>
           </div>
@@ -343,7 +396,7 @@ function ActivePolicyCard() {
                 color: "var(--foreground)",
               }}
             >
-              {WORKER.riskScore} / 100
+              {riskScore} / 100
             </p>
             <p
               className="text-xs"
@@ -352,9 +405,9 @@ function ActivePolicyCard() {
                 color: "var(--muted)",
               }}
             >
-              {WORKER.riskScore < 35
+              {riskScore < 35
                 ? "Low Risk"
-                : WORKER.riskScore < 70
+                : riskScore < 70
                   ? "Standard Risk"
                   : "High Risk"}
             </p>
@@ -417,7 +470,7 @@ function ActivePolicyCard() {
               color: "#166534",
             }}
           >
-            {WORKER.streak} weeks clean
+            {worker.streak_weeks ?? 0} weeks clean
           </p>
           <p
             className="text-xs"
@@ -492,7 +545,7 @@ function ActivePolicyCard() {
             color: "var(--foreground)",
           }}
         >
-          ₹{WORKER.premium} on Mon Apr 14, 06:00 AM
+          ₹{Number(policy.weekly_premium)} — renews {endLabel}
         </p>
       </div>
     </div>
@@ -502,7 +555,9 @@ function ActivePolicyCard() {
 /* ─── Right Column: Plan Comparison ─── */
 function PlanComparison() {
   const [openFaq, setOpenFaq] = useState<number | null>(null);
-  const activeIndex = PLANS.findIndex((p) => p.active);
+  const { policy } = useDashboardState();
+  const tierIdx = PLANS.findIndex((p) => p.name === policy?.tier);
+  const activeIndex = tierIdx >= 0 ? tierIdx : 0;
 
   return (
     <div>

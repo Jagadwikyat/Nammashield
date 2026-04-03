@@ -1,0 +1,6 @@
+services:
+  - type: web
+    name: nammashield-ml
+    runtime: python
+    buildCommand: pip install -r requirements.txt && python train_data.py && python risk_model.py && python fraud_model.py
+    startCommand: gunicorn api:app --bind 0.0.0.0:$PORT
