@@ -87,3 +87,16 @@ ml/venv/
 ml/.env
 
 .env.local
+
+# Documentation and temporary/unnecessary files
+Guidewire details.md
+PROJECT_CONTEXT.md
+pending.md
+worklog.md
+skills-lock.json
+.zscripts/
+.postman/
+postman/
+
+# Empty files
+mini-services/.gitkeep
